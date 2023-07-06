@@ -32,28 +32,29 @@
           };
 
     in
-      {
-        devShells.default =
-          let
-            ps = haskellPackagesOverride haskellPackages;
-          in
-            ps.shellFor {
-              packages = ps: with ps; [
-                graph-symmetries
-              ];
-              withHoogle = true;
-              nativeBuildInputs = with pkgs; with ps; [
-                # Building and testing
-                cabal-install
-                # Formatters
-                fourmolu
-                cabal-fmt
-                nixpkgs-fmt
-              ];
-            };
-        # The formatter to use for .nix files (but not .hs files)
-        # Allows us to run `nix fmt` to reformat nix files.
-        formatter = pkgs.nixpkgs-fmt;
-      }
+    {
+      devShells.default =
+        let
+          ps = haskellPackagesOverride haskellPackages;
+        in
+        ps.shellFor {
+          packages = ps: with ps; [
+            graph-symmetries
+          ];
+          withHoogle = true;
+          nativeBuildInputs = with pkgs; with ps; [
+            # Building and testing
+            cabal-install
+            haskell-language-server
+            # Formatters
+            fourmolu
+            cabal-fmt
+            nixpkgs-fmt
+          ];
+        };
+      # The formatter to use for .nix files (but not .hs files)
+      # Allows us to run `nix fmt` to reformat nix files.
+      formatter = pkgs.nixpkgs-fmt;
+    }
   );
 }
