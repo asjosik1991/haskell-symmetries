@@ -8,7 +8,7 @@ import Data.Maybe
 import Data.Monoid ()
 import Data.Set qualified as S
 
-{-Important types and functions-}
+{-MAIN TYPES AND FUNCTIONS-}
 
 -- |Definition of a (hyper)graph
 data Graph a = G (S.Set a) (S.Set (S.Set a)) deriving (Eq, Ord, Show)
@@ -33,7 +33,7 @@ orderSGS sgs = product $ map (L.genericLength . fundamentalOrbit) bs
     fundamentalOrbit b = b .^^ filter ((b <=) . minsupp) sgs
 
 -- |Given a strong generating set, return elements of the group it generates.
--- At first, we calculate transversal transversal generating set and only then return elements of the group
+-- At first, we calculate transversal generating set and only then return elements of the group
 eltsSGS :: (Ord a) => [Permutation a] -> [Permutation a]
 eltsSGS sgs = eltsTGS (tgsFromSgs sgs)
 
@@ -86,7 +86,7 @@ gAutsDPT g@(G vs' es') = dfs [] ([vs], [vs])
     es = esfromhes es'
     dps = M.fromAscList [(v, distancePartitionS vs es v) | v <- vs]
 
-{-Functions on permutations -}
+{-PERMUTATIONS -}
 
 -- |x .^ g returns the image of a vertex or point x under the action of the permutation g.
 -- The dot is meant to be a mnemonic for point or vertex.
@@ -134,11 +134,11 @@ instance Ord a => Monoid (Permutation a) where
 fromPairs :: Ord a => [(a, a)] -> Permutation a
 fromPairs xys = P (M.fromList (filter (uncurry (/=)) xys))
 
--- list the elts of the group, given a "transversal generating set"
+-- list the elements of the group, given a "transversal generating set"
 eltsTGS :: Ord a => [Permutation a] -> [Permutation a]
 eltsTGS tgs =
   let transversals = map (mempty :) $ L.groupBy (\g h -> minsupp g == minsupp h) tgs
-   in map mconcat $ sequence transversals
+   in map mconcat $ map reverse $ sequence transversals
 
 closureS :: Ord a => [a] -> [a -> a] -> S.Set a
 closureS xs fs = inclosure S.empty xs
@@ -151,6 +151,8 @@ closureS xs fs = inclosure S.empty xs
 closure :: Ord a => [a] -> [a -> a] -> [a]
 closure xs fs = S.toList $ closureS xs fs
 
+
+
 orbit :: Ord a => (a -> t -> a) -> a -> [t] -> [a]
 orbit action x gs = closure [x] [(`action` g) | g <- gs]
 
@@ -160,7 +162,7 @@ toListSet xs = map head $ L.group $ L.sort xs
 
 -- recover a transversal generating set from a strong generating set
 -- -- A strong generating set is a generating set gs such that <gs intersect si> = si
--- -- ie, its intersection with each successive stabiliser in the chain generates the stabiliser
+-- -- i.e., its intersection with each successive stabiliser in the chain generates the stabiliser
 tgsFromSgs :: Ord a => [Permutation a] -> [Permutation a]
 tgsFromSgs sgs = concatMap transversal bs
   where
@@ -183,7 +185,7 @@ esfromhes = S.fromList . L.nub . concatMap generatePairs . S.toList
       where
         list = S.toList set
 
-{-Functions needed to calculate the strong generating set-}
+{-DISTANCE PARTITION-}
 
 distancePartitionS :: Ord a => [a] -> S.Set [a] -> a -> [[a]]
 distancePartitionS vs eset v = distancePartition (S.singleton v) (S.delete v (S.fromList vs))
@@ -224,6 +226,103 @@ isAutomorphism g@(G vs es) pairs = (es == S.fromList (map (-^ p) (S.toList es)))
   where
     p = fromPairs pairs
 
+{-MAXIMAL TRANSLATION SUBGROUP-}
+
+-- calculate maximal translation subgroup of a given group of graph automorphisms. the function returns (group generators, group elements),
+-- where generators consitute a minimal generating set of the subgroup.
+maxAbsubgroup ::  (Ord a, Show a) => Graph a ->[Permutation a] -> ([Permutation a],[Permutation a])
+maxAbsubgroup graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups graph group) where
+  add_unity (g,gs)=(g,gs++[mempty])
+
+-- calculate maximal translation subgroup of a given group of graph automorphisms with known lattice dimension. the function returns (group generators, group elements),
+-- where generators consitute a minimal generating set of the subgroup.
+maxAbsubgroup_lat ::  (Ord a, Show a) => Int -> Graph a ->[Permutation a] -> ([Permutation a],[Permutation a])
+maxAbsubgroup_lat lat_dim graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups_lat lat_dim graph group) where
+  add_unity (g,gs)=(g,gs++[mempty])
+
+--compare two abelian subgroups by their order
+compare_by_ord ::  (Ord a, Show a) => ([Permutation a],[Permutation a])-> ([Permutation a],[Permutation a])->Ordering
+compare_by_ord g1 g2
+  | aborder g1 < aborder g2 = LT
+  | aborder g1 > aborder g2 = GT
+  | aborder g1 == aborder g2 = EQ
+  where
+    aborder (gen, group) = length group
+
+--calculate abelian subgroups with no fixed points with finite number of iterations of searching tree. the number of iterations corresponding to the lattice dimension
+absubgroups_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> [([Permutation a],[Permutation a])]
+absubgroups_lat lat_dim graph group = cycle_tree 1 cgs cgs where
+  cycle_tree iteration tail trg
+    | (new_tail==[] || iteration==lat_dim) = trg  
+    | otherwise = cycle_tree (iteration+1) new_tail new_trg
+      where
+        new_trg = new_tail++trg
+        new_tail = [(g,abgs) | (g,abgs)<-inter_tail, propersubgroup abgs == False] 
+          where
+            inter_tail = filterEqualSecond [ combine_abgroups (gs,abgs) (h,abh) | (gs, abgs)<-tail, (h,abh)<-cgs, all (<(head h)) gs, commuteWithAll h gs]
+            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs)| (_, abhs) <-inter_tail]
+  cgs = max_cycles (cycles graph group)
+
+--calculate abelian subgroups with no fixed points. input is a list of all group elements
+absubgroups :: (Ord a, Show a) => Graph a ->[Permutation a] -> [([Permutation a],[Permutation a])]
+absubgroups graph group = cycle_tree cgs cgs where
+  cycle_tree tail trg
+    | new_tail==[] = trg  
+    | otherwise = cycle_tree new_tail new_trg
+      where
+        new_trg = new_tail++trg
+        new_tail = [(g,abgs) | (g,abgs)<-inter_tail, propersubgroup abgs == False]
+          where
+            inter_tail = filterEqualSecond [ combine_abgroups (gs,abgs) (h,abh) | (gs, abgs)<-tail, (h,abh)<-cgs, all (<(head h)) gs, commuteWithAll h gs]
+            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs)| (_, abhs) <-inter_tail]
+  cgs = max_cycles (cycles graph group)
+
+--create a closure of two nonintersecting abelian groups represented as ([group generators],[elements of a group without unit element])
+combine_abgroups :: (Ord a, Show a)=>([Permutation a],[Permutation a])->([Permutation a],[Permutation a])->([Permutation a],[Permutation a])
+combine_abgroups (gs,abgs) (hs,abhs) = (gs++hs, abghs)
+  where abghs = L.sort $ L.nub (abgs++abhs++[h<>g |h<-abhs,g<-abgs, h<>g/=mempty])
+
+--check, if all elements in a list commute with all elements in another list
+commuteWithAll :: (Ord a, Show a)=> [Permutation a]-> [Permutation a]-> Bool
+commuteWithAll hs gs = and [g<>h== h<>g| h<-hs,g<-gs]  
+
+--calculate all derangement cycles generated by group elements
+cycles :: (Ord a, Show a) => Graph a ->[Permutation a] ->[(Permutation a, S.Set (Permutation a))]
+cycles graph group = filterEqualSecond  [( g, S.fromList $ powers g)| g <- group, g/=mempty, derangement graph (powers g)]
+  where
+    powers g = takeWhile (/=mempty) $ tail $ iterate (<>g) mempty
+
+--check if all permutations in a list are derangements
+derangement :: (Ord a, Show a) => Graph a ->[Permutation a]->Bool
+derangement graph cycle = and (map (isderangement graph) cycle)
+
+--check if a permutation is a derangement
+isderangement :: (Ord a, Show a) => Graph a ->Permutation a->Bool
+isderangement graph@(G vs es) (P mg) = (M.size mg == S.size vs)
+
+--filter list of tuples by the equal second elements
+filterEqualSecond :: Eq b => [(a, b)] -> [(a, b)]
+filterEqualSecond = L.nubBy (\(_, y1) (_, y2) -> y1 == y2)
+
+--calculate all maximal cycles i.e cycles not included into other cycles. return a list of ([generator], [generated cycle])
+max_cycles :: (Ord a, Show a) => [(Permutation a, S.Set (Permutation a))]->[([Permutation a],[Permutation a])]
+max_cycles cycles = [([g], S.toList gs)| (g,gs)<-cycles, propercycle gs == False] where
+  propercycle gs= or [gs `S.isProperSubsetOf` cycle| (_, cycle) <-cycles]
+
+{-ONE DIMENSIONAL REPRESENTATIONS-}
+
+--some representation functions
+
+{-TEST FUNCTIONS-}
+
+--naive way to generate a group from a generating set
+eltsbyclosure :: (Ord a) => [Permutation a] -> [Permutation a]
+eltsbyclosure gs = closure [mempty] [ (<>g) | g <- gs]
+
+--check that permutations are graph automorphisms
+permutations_check :: (Ord a)=> Graph a -> [Permutation a] -> Bool
+permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toList es))| p<-group] 
+
 {-EXAMPLES-}
 
 -- function to initialize a graph from lists
@@ -237,8 +336,14 @@ c n | n >= 3 = graph (vs, es)
     vs = [1 .. n]
     es = L.insert [1, n] [[i, i + 1] | i <- [1 .. n - 1]]
 
--- automorphism group   is D2n
+-- rectangle lattice
+rect :: (Integral t) => t->t -> Graph t
+rect n k = graph (vs, es)
+  where
+    vs=[0..n*k-1]
+    es=[ [k*i+j,k*i+((j+1) `mod` k)] |i<-[0..n-1],j<-[0..k-1]]++[ [k*i+j,k*((i+1 )`mod` n)+j] |i<-[0..n-1],j<-[0..k-1]]
 
+-- cyclic hypergraph with 3-vertex edges
 c3 :: (Integral t) => t -> Graph t
 c3 n | n >= 3 = graph (vs, es)
   where
