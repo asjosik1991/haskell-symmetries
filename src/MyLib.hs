@@ -1,12 +1,27 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedLists #-}
 
-module MyLib (orderSGS, eltsSGS, graphAuts, Graph (..), Permutation (..)) where
+module MyLib
+  ( orderSGS
+  , eltsSGS
+  , graphAuts
+  , Graph (..)
+  , Permutation (..)
+  , symmetryGroup
+  , CommutationMatrix (..)
+  , mkCommutationMatrix
+  , areCommuting
+  , abelianDFS
+  ) where
 
+import Data.List (groupBy)
 import Data.List qualified as L
 import Data.Map qualified as M
 import Data.Maybe
 import Data.Monoid ()
 import Data.Set qualified as S
+import Data.Vector (Vector, (!))
+import Data.Vector qualified as V
 
 {-MAIN TYPES AND FUNCTIONS-}
 
@@ -123,11 +138,11 @@ minsupp = head . supp
 
 -- Semigroup to combine two permutations
 instance Ord a => Semigroup (Permutation a) where
-  g <> h = fromPairs [(x, x .^ g .^ h) | x <- union (supp g) (supp h)]
+  g <> h = fromPairs [(x, x .^ g .^ h) | x <- supp g `union` supp h]
 
 -- Add unity
 instance Ord a => Monoid (Permutation a) where
-  mempty = P $ M.empty
+  mempty = P M.empty
   mappend = (<>)
 
 -- make a permutation from pairs (a point, its image under the permutation)
@@ -150,8 +165,6 @@ closureS xs fs = inclosure S.empty xs
 
 closure :: Ord a => [a] -> [a -> a] -> [a]
 closure xs fs = S.toList $ closureS xs fs
-
-
 
 orbit :: Ord a => (a -> t -> a) -> a -> [t] -> [a]
 orbit action x gs = closure [x] [(`action` g) | g <- gs]
@@ -230,18 +243,20 @@ isAutomorphism g@(G vs es) pairs = (es == S.fromList (map (-^ p) (S.toList es)))
 
 -- calculate maximal translation subgroup of a given group of graph automorphisms. the function returns (group generators, group elements),
 -- where generators consitute a minimal generating set of the subgroup.
-maxAbsubgroup ::  (Ord a, Show a) => Graph a ->[Permutation a] -> ([Permutation a],[Permutation a])
-maxAbsubgroup graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups graph group) where
-  add_unity (g,gs)=(g,gs++[mempty])
+maxAbsubgroup :: (Ord a, Show a) => Graph a -> [Permutation a] -> ([Permutation a], [Permutation a])
+maxAbsubgroup graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups graph group)
+  where
+    add_unity (g, gs) = (g, gs ++ [mempty])
 
 -- calculate maximal translation subgroup of a given group of graph automorphisms with known lattice dimension. the function returns (group generators, group elements),
 -- where generators consitute a minimal generating set of the subgroup.
-maxAbsubgroup_lat ::  (Ord a, Show a) => Int -> Graph a ->[Permutation a] -> ([Permutation a],[Permutation a])
-maxAbsubgroup_lat lat_dim graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups_lat lat_dim graph group) where
-  add_unity (g,gs)=(g,gs++[mempty])
+maxAbsubgroup_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> ([Permutation a], [Permutation a])
+maxAbsubgroup_lat lat_dim graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups_lat lat_dim graph group)
+  where
+    add_unity (g, gs) = (g, gs ++ [mempty])
 
---compare two abelian subgroups by their order
-compare_by_ord ::  (Ord a, Show a) => ([Permutation a],[Permutation a])-> ([Permutation a],[Permutation a])->Ordering
+-- compare two abelian subgroups by their order
+compare_by_ord :: (Ord a, Show a) => ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a]) -> Ordering
 compare_by_ord g1 g2
   | aborder g1 < aborder g2 = LT
   | aborder g1 > aborder g2 = GT
@@ -249,79 +264,83 @@ compare_by_ord g1 g2
   where
     aborder (gen, group) = length group
 
---calculate abelian subgroups with no fixed points with finite number of iterations of searching tree. the number of iterations corresponding to the lattice dimension
-absubgroups_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> [([Permutation a],[Permutation a])]
-absubgroups_lat lat_dim graph group = cycle_tree 1 cgs cgs where
-  cycle_tree iteration tail trg
-    | (new_tail==[] || iteration==lat_dim) = trg  
-    | otherwise = cycle_tree (iteration+1) new_tail new_trg
-      where
-        new_trg = new_tail++trg
-        new_tail = [(g,abgs) | (g,abgs)<-inter_tail, propersubgroup abgs == False] 
-          where
-            inter_tail = filterEqualSecond [ combine_abgroups (gs,abgs) (h,abh) | (gs, abgs)<-tail, (h,abh)<-cgs, all (<(head h)) gs, commuteWithAll h gs]
-            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs)| (_, abhs) <-inter_tail]
-  cgs = max_cycles (cycles graph group)
-
---calculate abelian subgroups with no fixed points. input is a list of all group elements
-absubgroups :: (Ord a, Show a) => Graph a ->[Permutation a] -> [([Permutation a],[Permutation a])]
-absubgroups graph group = cycle_tree cgs cgs where
-  cycle_tree tail trg
-    | new_tail==[] = trg  
-    | otherwise = cycle_tree new_tail new_trg
-      where
-        new_trg = new_tail++trg
-        new_tail = [(g,abgs) | (g,abgs)<-inter_tail, propersubgroup abgs == False]
-          where
-            inter_tail = filterEqualSecond [ combine_abgroups (gs,abgs) (h,abh) | (gs, abgs)<-tail, (h,abh)<-cgs, all (<(head h)) gs, commuteWithAll h gs]
-            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs)| (_, abhs) <-inter_tail]
-  cgs = max_cycles (cycles graph group)
-
---create a closure of two nonintersecting abelian groups represented as ([group generators],[elements of a group without unit element])
-combine_abgroups :: (Ord a, Show a)=>([Permutation a],[Permutation a])->([Permutation a],[Permutation a])->([Permutation a],[Permutation a])
-combine_abgroups (gs,abgs) (hs,abhs) = (gs++hs, abghs)
-  where abghs = L.sort $ L.nub (abgs++abhs++[h<>g |h<-abhs,g<-abgs, h<>g/=mempty])
-
---check, if all elements in a list commute with all elements in another list
-commuteWithAll :: (Ord a, Show a)=> [Permutation a]-> [Permutation a]-> Bool
-commuteWithAll hs gs = and [g<>h== h<>g| h<-hs,g<-gs]  
-
---calculate all derangement cycles generated by group elements
-cycles :: (Ord a, Show a) => Graph a ->[Permutation a] ->[(Permutation a, S.Set (Permutation a))]
-cycles graph group = filterEqualSecond  [( g, S.fromList $ powers g)| g <- group, g/=mempty, derangement graph (powers g)]
+-- calculate abelian subgroups with no fixed points with finite number of iterations of searching tree. the number of iterations corresponding to the lattice dimension
+absubgroups_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> [([Permutation a], [Permutation a])]
+absubgroups_lat lat_dim graph group = cycle_tree 1 cgs cgs
   where
-    powers g = takeWhile (/=mempty) $ tail $ iterate (<>g) mempty
+    cycle_tree iteration tail trg
+      | (new_tail == [] || iteration == lat_dim) = trg
+      | otherwise = cycle_tree (iteration + 1) new_tail new_trg
+      where
+        new_trg = new_tail ++ trg
+        new_tail = [(g, abgs) | (g, abgs) <- inter_tail, propersubgroup abgs == False]
+          where
+            inter_tail = filterEqualSecond [combine_abgroups (gs, abgs) (h, abh) | (gs, abgs) <- tail, (h, abh) <- cgs, all (< (head h)) gs, commuteWithAll h gs]
+            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs) | (_, abhs) <- inter_tail]
+    cgs = max_cycles (cycles graph group)
 
---check if all permutations in a list are derangements
-derangement :: (Ord a, Show a) => Graph a ->[Permutation a]->Bool
+-- calculate abelian subgroups with no fixed points. input is a list of all group elements
+absubgroups :: (Ord a, Show a) => Graph a -> [Permutation a] -> [([Permutation a], [Permutation a])]
+absubgroups graph group = cycle_tree cgs cgs
+  where
+    cycle_tree tail trg
+      | new_tail == [] = trg
+      | otherwise = cycle_tree new_tail new_trg
+      where
+        new_trg = new_tail ++ trg
+        new_tail = [(g, abgs) | (g, abgs) <- inter_tail, propersubgroup abgs == False]
+          where
+            inter_tail = filterEqualSecond [combine_abgroups (gs, abgs) (h, abh) | (gs, abgs) <- tail, (h, abh) <- cgs, all (< (head h)) gs, commuteWithAll h gs]
+            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs) | (_, abhs) <- inter_tail]
+    cgs = max_cycles (cycles graph group)
+
+-- create a closure of two nonintersecting abelian groups represented as ([group generators],[elements of a group without unit element])
+combine_abgroups :: (Ord a, Show a) => ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a])
+combine_abgroups (gs, abgs) (hs, abhs) = (gs ++ hs, abghs)
+  where
+    abghs = L.sort $ L.nub (abgs ++ abhs ++ [h <> g | h <- abhs, g <- abgs, h <> g /= mempty])
+
+-- check, if all elements in a list commute with all elements in another list
+commuteWithAll :: (Ord a, Show a) => [Permutation a] -> [Permutation a] -> Bool
+commuteWithAll hs gs = and [g <> h == h <> g | h <- hs, g <- gs]
+
+-- calculate all derangement cycles generated by group elements
+cycles :: (Ord a, Show a) => Graph a -> [Permutation a] -> [(Permutation a, S.Set (Permutation a))]
+cycles graph group = filterEqualSecond [(g, S.fromList $ powers g) | g <- group, g /= mempty, derangement graph (powers g)]
+  where
+    powers g = takeWhile (/= mempty) $ tail $ iterate (<> g) mempty
+
+-- check if all permutations in a list are derangements
+derangement :: (Ord a, Show a) => Graph a -> [Permutation a] -> Bool
 derangement graph cycle = and (map (isderangement graph) cycle)
 
---check if a permutation is a derangement
-isderangement :: (Ord a, Show a) => Graph a ->Permutation a->Bool
+-- check if a permutation is a derangement
+isderangement :: (Ord a, Show a) => Graph a -> Permutation a -> Bool
 isderangement graph@(G vs es) (P mg) = (M.size mg == S.size vs)
 
---filter list of tuples by the equal second elements
+-- filter list of tuples by the equal second elements
 filterEqualSecond :: Eq b => [(a, b)] -> [(a, b)]
 filterEqualSecond = L.nubBy (\(_, y1) (_, y2) -> y1 == y2)
 
---calculate all maximal cycles i.e cycles not included into other cycles. return a list of ([generator], [generated cycle])
-max_cycles :: (Ord a, Show a) => [(Permutation a, S.Set (Permutation a))]->[([Permutation a],[Permutation a])]
-max_cycles cycles = [([g], S.toList gs)| (g,gs)<-cycles, propercycle gs == False] where
-  propercycle gs= or [gs `S.isProperSubsetOf` cycle| (_, cycle) <-cycles]
+-- calculate all maximal cycles i.e cycles not included into other cycles. return a list of ([generator], [generated cycle])
+max_cycles :: (Ord a, Show a) => [(Permutation a, S.Set (Permutation a))] -> [([Permutation a], [Permutation a])]
+max_cycles cycles = [([g], S.toList gs) | (g, gs) <- cycles, propercycle gs == False]
+  where
+    propercycle gs = or [gs `S.isProperSubsetOf` cycle | (_, cycle) <- cycles]
 
 {-ONE DIMENSIONAL REPRESENTATIONS-}
 
---some representation functions
+-- some representation functions
 
 {-TEST FUNCTIONS-}
 
---naive way to generate a group from a generating set
+-- naive way to generate a group from a generating set
 eltsbyclosure :: (Ord a) => [Permutation a] -> [Permutation a]
-eltsbyclosure gs = closure [mempty] [ (<>g) | g <- gs]
+eltsbyclosure gs = closure [mempty] [(<> g) | g <- gs]
 
---check that permutations are graph automorphisms
-permutations_check :: (Ord a)=> Graph a -> [Permutation a] -> Bool
-permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toList es))| p<-group] 
+-- check that permutations are graph automorphisms
+permutations_check :: (Ord a) => Graph a -> [Permutation a] -> Bool
+permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toList es)) | p <- group]
 
 {-EXAMPLES-}
 
@@ -337,11 +356,11 @@ c n | n >= 3 = graph (vs, es)
     es = L.insert [1, n] [[i, i + 1] | i <- [1 .. n - 1]]
 
 -- rectangle lattice
-rect :: (Integral t) => t->t -> Graph t
+rect :: (Integral t) => t -> t -> Graph t
 rect n k = graph (vs, es)
   where
-    vs=[0..n*k-1]
-    es=[ [k*i+j,k*i+((j+1) `mod` k)] |i<-[0..n-1],j<-[0..k-1]]++[ [k*i+j,k*((i+1 )`mod` n)+j] |i<-[0..n-1],j<-[0..k-1]]
+    vs = [0 .. n * k - 1]
+    es = [[k * i + j, k * i + ((j + 1) `mod` k)] | i <- [0 .. n - 1], j <- [0 .. k - 1]] ++ [[k * i + j, k * ((i + 1) `mod` n) + j] | i <- [0 .. n - 1], j <- [0 .. k - 1]]
 
 -- cyclic hypergraph with 3-vertex edges
 c3 :: (Integral t) => t -> Graph t
@@ -349,3 +368,50 @@ c3 n | n >= 3 = graph (vs, es)
   where
     vs = [0 .. (n - 1)]
     es = [[i, (i + 1) `mod` n, (i + 2) `mod` n] | i <- [0 .. (n - 1)]]
+
+symmetryGroup :: Integral t => Graph t -> [Permutation t]
+symmetryGroup = eltsSGS . graphAuts
+
+newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
+  deriving stock (Show, Eq)
+
+mkCommutationMatrix :: Ord t => Vector (Permutation t) -> CommutationMatrix
+mkCommutationMatrix gs =
+  CommutationMatrix $
+    fmap (\g -> fmap (\h -> g <> h == h <> g) gs) gs
+
+areCommuting :: CommutationMatrix -> Int -> Int -> Bool
+areCommuting (CommutationMatrix m) i j = m ! i ! j
+
+data History = History
+  { hIncluded :: !(Vector Int)
+  , hMask :: !(Vector Bool)
+  }
+  deriving stock (Show, Eq)
+
+abelianDFS :: Ord t => CommutationMatrix -> Vector (Permutation t) -> [History]
+abelianDFS (CommutationMatrix comm) gs = go emptyHistory
+  where
+    emptyHistory :: History
+    emptyHistory = History V.empty (V.replicate (V.length gs) True)
+    addToHistory :: Bool -> History -> Int -> History
+    addToHistory excludeSelf (History included mask) i =
+      History
+        { hIncluded = included `V.snoc` i
+        , hMask = if excludeSelf then mask' V.// [(i, False)] else mask'
+        }
+      where
+        mask' = V.zipWith (&&) mask (comm ! i)
+    getChoices :: History -> [Int]
+    getChoices (History _ mask) = V.toList . V.map fst . V.filter snd . V.indexed $ mask
+
+    mergeHistories :: [History] -> History
+    mergeHistories hs = undefined
+
+    go :: History -> [History]
+    go history =
+      case getChoices history of
+        [] -> [history]
+        cs ->
+          let newHistories = fmap mergeHistories $ groupBy (\a b -> hMask a == hMask b) $ fmap (addToHistory False history) cs
+           in concatMap go newHistories
