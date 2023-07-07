@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedLists #-}
 
@@ -12,16 +13,23 @@ module MyLib
   , mkCommutationMatrix
   , areCommuting
   , abelianDFS
+  , FastPermutation (..)
+  , toFastPermutations
   ) where
 
+import Control.DeepSeq
 import Data.List (groupBy)
 import Data.List qualified as L
 import Data.Map qualified as M
 import Data.Maybe
-import Data.Monoid ()
+import Data.Ord (comparing)
 import Data.Set qualified as S
-import Data.Vector (Vector, (!))
+import Data.Vector (Vector)
 import Data.Vector qualified as V
+import Data.Vector.Generic ((!))
+import Data.Vector.Unboxed qualified as U
+import Debug.Trace (trace, traceShow)
+import GHC.Generics
 
 {-MAIN TYPES AND FUNCTIONS-}
 
@@ -29,7 +37,9 @@ import Data.Vector qualified as V
 data Graph a = G (S.Set a) (S.Set (S.Set a)) deriving (Eq, Ord, Show)
 
 -- |Definition of a permutation
-newtype Permutation a = P (M.Map a a) deriving (Eq, Ord, Show)
+newtype Permutation a = P (M.Map a a)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (NFData)
 
 -- |Data structure organising the search of generating permutations
 -- The boolean indicates whether or not this is a terminal / solution node
@@ -372,13 +382,34 @@ c3 n | n >= 3 = graph (vs, es)
 symmetryGroup :: Integral t => Graph t -> [Permutation t]
 symmetryGroup = eltsSGS . graphAuts
 
-newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
-  deriving stock (Show, Eq)
+newtype FastPermutation = FastPermutation (U.Vector Int)
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (NFData)
 
-mkCommutationMatrix :: Ord t => Vector (Permutation t) -> CommutationMatrix
-mkCommutationMatrix gs =
+toFastPermutations :: Ord t => Graph t -> Vector (Permutation t) -> Vector FastPermutation
+toFastPermutations (G nodes _) = fmap magic
+  where
+    nodesList = S.toAscList nodes
+    eltToIntMap = M.fromAscList $ zip nodesList [(0 :: Int) ..]
+    eltToInt elt = let Just i = M.lookup elt eltToIntMap in i
+    magic (P mapping) =
+      FastPermutation . U.fromList $
+        (\(elt, index) -> maybe index eltToInt (M.lookup elt mapping))
+          <$> zip nodesList [0 ..]
+
+instance Semigroup FastPermutation where
+  (FastPermutation a) <> (FastPermutation b) = FastPermutation $ U.map (b !) a
+
+newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (NFData)
+
+mkCommutationMatrix :: Ord t => Graph t -> Vector (Permutation t) -> CommutationMatrix
+mkCommutationMatrix graph gs =
   CommutationMatrix $
-    fmap (\g -> fmap (\h -> g <> h == h <> g) gs) gs
+    fmap (\g -> fmap (\h -> g <> h == h <> g) gs') gs'
+  where
+    gs' = toFastPermutations graph gs
 
 areCommuting :: CommutationMatrix -> Int -> Int -> Bool
 areCommuting (CommutationMatrix m) i j = m ! i ! j
@@ -394,24 +425,33 @@ abelianDFS (CommutationMatrix comm) gs = go emptyHistory
   where
     emptyHistory :: History
     emptyHistory = History V.empty (V.replicate (V.length gs) True)
-    addToHistory :: Bool -> History -> Int -> History
-    addToHistory excludeSelf (History included mask) i =
+    addToHistory :: History -> Int -> History
+    addToHistory (History included mask) i =
       History
         { hIncluded = included `V.snoc` i
-        , hMask = if excludeSelf then mask' V.// [(i, False)] else mask'
+        , hMask = V.zipWith (&&) mask (comm ! i)
         }
-      where
-        mask' = V.zipWith (&&) mask (comm ! i)
     getChoices :: History -> [Int]
-    getChoices (History _ mask) = V.toList . V.map fst . V.filter snd . V.indexed $ mask
+    getChoices (History included mask) =
+      V.toList . V.filter (not . flip S.member seen) . V.map fst . V.filter snd . V.indexed $ mask
+      where
+        seen = S.fromList . V.toList $ included
 
     mergeHistories :: [History] -> History
-    mergeHistories hs = undefined
+    mergeHistories hs = History included mask
+      where
+        included = V.fromList . S.toList . S.fromList $ concatMap (V.toList . hIncluded) hs
+        mask = hMask . head $ hs
 
     go :: History -> [History]
     go history =
       case getChoices history of
         [] -> [history]
         cs ->
-          let newHistories = fmap mergeHistories $ groupBy (\a b -> hMask a == hMask b) $ fmap (addToHistory False history) cs
+          let newHistories =
+                L.sortOn (negate . V.length . hIncluded)
+                  . fmap mergeHistories
+                  . groupBy (\a b -> hMask a == hMask b)
+                  . L.sortOn hMask
+                  $ addToHistory history <$> cs
            in concatMap go newHistories
