@@ -249,7 +249,7 @@ isAutomorphism g@(G vs es) pairs = (es == S.fromList (map (-^ p) (S.toList es)))
   where
     p = fromPairs pairs
 
-{-MAXIMAL TRANSLATION SUBGROUP-}
+{-{-MAXIMAL TRANSLATION SUBGROUP-}
 
 -- calculate maximal translation subgroup of a given group of graph automorphisms. the function returns (group generators, group elements),
 -- where generators consitute a minimal generating set of the subgroup.
@@ -337,10 +337,83 @@ max_cycles :: (Ord a, Show a) => [(Permutation a, S.Set (Permutation a))] -> [([
 max_cycles cycles = [([g], S.toList gs) | (g, gs) <- cycles, propercycle gs == False]
   where
     propercycle gs = or [gs `S.isProperSubsetOf` cycle | (_, cycle) <- cycles]
-
+-}
 {-ONE DIMENSIONAL REPRESENTATIONS-}
 
--- some representation functions
+--prime factorization
+factorize :: Int -> Int -> [Int]
+factorize _ 1 = []
+factorize d n
+    | d * d > n = [n]
+    | n `mod` d == 0 = d : factorize d (n `div` d)
+    | otherwise = factorize (d + 1) n
+
+primeFactors :: Int -> [Int]
+primeFactors = factorize 2
+
+formatfactors :: [Int]->[(Int,Int)]
+formatfactors xs= recformat xs [] where
+  recformat [] fxs =fxs
+  recformat xs fxs =recformat (filter (/=m) xs) [(m,length $ (filter (==m) xs))]++fxs where
+    m=maximum xs
+
+--returns list of tuples (prime number, power in prime decomposition)
+p_factors :: Int->[(Int,Int)]
+p_factors x = formatfactors $ primeFactors x
+
+--calculate orders of group elements
+element_orders :: [FastPermutation] -> [(FastPermutation,(Int,Int))]
+element_orders gs = [(g, head (p_factors $ order g))| g<-gs, (length $ p_factors $ order g) ==1] where
+  order g = 1+(L.length $ takeWhile (/= g) $ tail $ iterate (<> g) g) 
+
+--find generators with corresponding orbit length. it needs for characters table
+group_generators :: [FastPermutation] -> [(FastPermutation,(Int,Int))]
+group_generators gs = recgens ps_ini [] ord_gs [] where
+  
+  ps_ini = p_factors $ length gs
+  ord_gs=element_orders gs
+
+  recgens [] gens cs_tail subgroup = gens 
+  recgens ps gens cs_tail subgroup = recgens new_ps new_gens new_cs_tail new_subgroup 
+    where 
+      nice_cs = find_nice_cs cs_tail ps
+      new_ps = update_pfactors ps nice_cs
+      new_subgroup= update_subgroup subgroup nice_cs
+      new_cs_tail= update_cs_tail new_subgroup new_ps cs_tail
+      new_gens=[nice_cs]++gens
+
+update_pfactors :: [(Int,Int)]->(FastPermutation,(Int,Int))->[(Int,Int)]
+update_pfactors ((p,ppower):ps) (_, (nice_p, nice_power))
+  | ppower-nice_power>0 = (p,ppower-nice_power):ps
+  | ppower-nice_power==0 = ps
+
+update_cs_tail :: [FastPermutation] -> [(Int,Int)] -> [(FastPermutation, (Int,Int))]->[(FastPermutation, (Int,Int))]
+update_cs_tail  new_subgroup new_ps cs_tail = [(fp,(p,ppower)) | (fp,(p,ppower))<-cs_tail, fp `L.notElem` new_subgroup, (p,ppower)<(L.maximum new_ps)]
+
+update_subgroup :: [FastPermutation] -> (FastPermutation, (Int, Int)) ->[FastPermutation]
+update_subgroup subgroup (nice_gen,(p,ppower)) = L.nub [h<>g| h <- subgroup++[unit], g <-powers_list] where
+  unit =FastPermutation (U.fromList  [0..((fp_length nice_gen)-1)])
+  powers_list = take (p^ppower) (iterate (<>nice_gen) unit)
+
+find_nice_cs :: [(FastPermutation, (Int,Int))] -> [(Int,Int)] -> (FastPermutation, (Int,Int))
+find_nice_cs cs_tail ps = L.maximumBy (comparing snd) (filter (\(x,(p,pk))-> p==(fst pp) && pk<=(snd pp)) cs_tail) where
+  pp=head ps
+
+fp_length :: FastPermutation -> Int
+fp_length (FastPermutation vector) = U.length vector
+
+-- build commutator subgroup [G,G]
+commutator_subgroup :: [FastPermutation] -> [FastPermutation]
+commutator_subgroup gs = L.nub [g<>h<>(invert g)<>(invert h)| g<-gs,h<-gs]
+
+--build abelianization G/[G,G]
+abelianization :: [FastPermutation] -> [S.Set FastPermutation]
+abelianization gs = L.nub [coset g cgs|g<-gs] where
+  coset g cgs=S.fromList [g<>h|h<-cgs]
+  cgs = commutator_subgroup gs
+
+--multiplication of equivalence classes
+--fast multiplication by multiplicative table
 
 {-TEST FUNCTIONS-}
 
@@ -379,13 +452,20 @@ c3 n | n >= 3 = graph (vs, es)
     vs = [0 .. (n - 1)]
     es = [[i, (i + 1) `mod` n, (i + 2) `mod` n] | i <- [0 .. (n - 1)]]
 
-symmetryGroup :: Integral t => Graph t -> [Permutation t]
+{-MAXIMAL ABELIAN SUBGROUP-}
+
+fastsymmetryGroup :: Integral t => Graph t -> [FastPermutation]
+fastsymmetryGroup graph = V.toList $ toFastPermutations graph (V.fromList (symmetryGroup graph))
+
+symmetryGroup :: Ord t => Graph t -> [Permutation t]
 symmetryGroup = eltsSGS . graphAuts
 
 newtype FastPermutation = FastPermutation (U.Vector Int)
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord,Generic)
   deriving anyclass (NFData)
 
+
+--make fast permutations
 toFastPermutations :: Ord t => Graph t -> Vector (Permutation t) -> Vector FastPermutation
 toFastPermutations (G nodes _) = fmap magic
   where
@@ -399,6 +479,14 @@ toFastPermutations (G nodes _) = fmap magic
 
 instance Semigroup FastPermutation where
   (FastPermutation a) <> (FastPermutation b) = FastPermutation $ U.map (b !) a
+
+--find index of an integer
+elemIndexInt :: U.Vector Int -> Int -> Int
+elemIndexInt vx x= fromJust (U.elemIndex x vx)
+
+--make inverse
+invert :: FastPermutation -> FastPermutation
+invert (FastPermutation a)= FastPermutation $ U.generate (U.length a) (elemIndexInt a)
 
 newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
   deriving stock (Show, Eq, Generic)
@@ -455,3 +543,15 @@ abelianDFS (CommutationMatrix comm) gs = go emptyHistory
                   . L.sortOn hMask
                   $ addToHistory history <$> cs
            in concatMap go newHistories
+
+--maximal abelian subgroup of graph automorphisms
+abSymmetries :: Ord t => Graph t -> Vector FastPermutation
+abSymmetries gr = V.fromList [gsfast!index |index<-(V.toList int_form)]
+     where
+      gs=V.fromList $ symmetryGroup gr
+      mkComm=mkCommutationMatrix gr gs
+      branches=take 20 (abelianDFS mkComm gs)
+      leaf= L.maximumBy (comparing (V.length . hIncluded)) branches
+      int_form=hIncluded leaf
+      gsfast=toFastPermutations gr gs
+      

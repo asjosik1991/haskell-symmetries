@@ -73,7 +73,6 @@ library
     , base        >=4.16.0.0 && <5
     , containers
     , deepseq
-    , hmatrix
     , vector
 
   -- Directories containing source files.
