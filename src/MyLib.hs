@@ -18,6 +18,7 @@ module MyLib
   ) where
 
 import Control.DeepSeq
+import Data.Kind (Constraint, Type)
 import Data.List (groupBy)
 import Data.List qualified as L
 import Data.Map qualified as M
@@ -33,39 +34,68 @@ import GHC.Generics
 
 {-MAIN TYPES AND FUNCTIONS-}
 
--- |Definition of a (hyper)graph
+-- | Definition of a (hyper)graph
 data Graph a = G (S.Set a) (S.Set (S.Set a)) deriving (Eq, Ord, Show)
 
--- |Definition of a permutation
+-- | Definition of a permutation
 newtype Permutation a = P (M.Map a a)
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (NFData)
 
--- |Data structure organising the search of generating permutations
--- The boolean indicates whether or not this is a terminal / solution node
+-- | Data structure organising the search of generating permutations
+--  The boolean indicates whether or not this is a terminal / solution node
 data SearchTree a = T Bool a [SearchTree a] deriving (Eq, Ord, Show, Functor)
 
--- |Given a graph, return the strong generating set
+class HasIdentity a where
+  isIdentity :: a -> Bool
+
+newtype GroupElement a = UnsafeGroupElement {unGroupElement :: Maybe a}
+  deriving stock (Show, Eq)
+
+instance HasIdentity (GroupElement a) where
+  isIdentity = isNothing . unGroupElement
+
+mkGroupLike :: (HasIdentity a) => a -> GroupElement a
+mkGroupLike x
+  | isIdentity x = UnsafeGroupElement Nothing
+  | otherwise = UnsafeGroupElement (Just x)
+
+instance (Semigroup a, HasIdentity a) => Semigroup (GroupElement a) where
+  a <> b
+    | isIdentity a = b
+    | isIdentity b = a
+    | otherwise = mkGroupLike $ fromJust (unGroupElement a) <> fromJust (unGroupElement b)
+
+instance (Semigroup a, HasIdentity a) => Monoid (GroupElement a) where
+  mempty = UnsafeGroupElement Nothing
+
+type IsGroupElement :: Type -> Constraint
+type IsGroupElement a = (Eq a, Ord a, HasIdentity a, Monoid a)
+
+foo :: (IsGroupElement a) => a -> Bool
+foo = isIdentity
+
+-- | Given a graph, return the strong generating set
 graphAuts :: (Ord a) => Graph a -> [Permutation a]
 graphAuts g = filter (/= mempty) (strongTerminals (gAutsDPT g))
 
--- |Given a strong generating set, return the order of the group it generates.
--- Note that the SGS is assumed to be relative to the natural order of the points on which the group acts.
+-- | Given a strong generating set, return the order of the group it generates.
+--  Note that the SGS is assumed to be relative to the natural order of the points on which the group acts.
 orderSGS :: (Ord a) => [Permutation a] -> Integer
 orderSGS sgs = product $ map (L.genericLength . fundamentalOrbit) bs
   where
     bs = toListSet $ map minsupp sgs
     fundamentalOrbit b = b .^^ filter ((b <=) . minsupp) sgs
 
--- |Given a strong generating set, return elements of the group it generates.
--- At first, we calculate transversal generating set and only then return elements of the group
+-- | Given a strong generating set, return elements of the group it generates.
+--  At first, we calculate transversal generating set and only then return elements of the group
 eltsSGS :: (Ord a) => [Permutation a] -> [Permutation a]
 eltsSGS sgs = eltsTGS (tgsFromSgs sgs)
 
--- |Return a strong generating set ftrom the whole search tree.
--- For example, if we have already found (3 4), and then we find (1 2 3),
--- then there is no need to look for (1 3 ...) or (1 4 ...), since it is clear that such elements exist
--- as products of those we have already found.
+-- | Return a strong generating set ftrom the whole search tree.
+--  For example, if we have already found (3 4), and then we find (1 2 3),
+--  then there is no need to look for (1 3 ...) or (1 4 ...), since it is clear that such elements exist
+--  as products of those we have already found.
 strongTerminals :: (Ord a) => SearchTree [(a, a)] -> [Permutation a]
 strongTerminals = instrongTerminals []
   where
@@ -84,7 +114,7 @@ strongTerminals = instrongTerminals []
             else find1New gs ts
     find1New gs [] = gs
 
--- |Generate a SearchTree of graph automorphisms using distance partition
+-- | Generate a SearchTree of graph automorphisms using distance partition
 gAutsDPT :: forall a. (Ord a) => Graph a -> SearchTree [(a, a)]
 gAutsDPT g@(G vs' es') = dfs [] ([vs], [vs])
   where
@@ -113,24 +143,24 @@ gAutsDPT g@(G vs' es') = dfs [] ([vs], [vs])
 
 {-PERMUTATIONS -}
 
--- |x .^ g returns the image of a vertex or point x under the action of the permutation g.
--- The dot is meant to be a mnemonic for point or vertex.
+-- | x .^ g returns the image of a vertex or point x under the action of the permutation g.
+--  The dot is meant to be a mnemonic for point or vertex.
 (.^) :: (Ord a) => a -> Permutation a -> a
 x .^ P g = case M.lookup x g of
   Just y -> y
   Nothing -> x -- if x `notElem` supp (P g), then x is not moved
 
--- |b -^ g returns the image of an edge or block b under the action of the permutation g.
--- The dash is meant to be a mnemonic for edge or line or block.
+-- | b -^ g returns the image of an edge or block b under the action of the permutation g.
+--  The dash is meant to be a mnemonic for edge or line or block.
 (-^) :: (Ord a) => S.Set a -> Permutation a -> S.Set a
 xs -^ g = S.fromList [x .^ g | x <- S.toList xs]
 
--- |x .^^ gs returns the orbit of the point or vertex x under the action of the gs
+-- | x .^^ gs returns the orbit of the point or vertex x under the action of the gs
 (.^^) :: (Ord a) => a -> [Permutation a] -> [a]
 x .^^ gs = orbit (.^) x gs
 
 -- a version of union which assumes the arguments are ascending sets (no repeated elements)
-union :: Ord a => [a] -> [a] -> [a]
+union :: (Ord a) => [a] -> [a] -> [a]
 union (x : xs) (y : ys) =
   case compare x y of
     LT -> x : union xs (y : ys)
@@ -147,25 +177,25 @@ minsupp :: Permutation c -> c
 minsupp = head . supp
 
 -- Semigroup to combine two permutations
-instance Ord a => Semigroup (Permutation a) where
+instance (Ord a) => Semigroup (Permutation a) where
   g <> h = fromPairs [(x, x .^ g .^ h) | x <- supp g `union` supp h]
 
 -- Add unity
-instance Ord a => Monoid (Permutation a) where
+instance (Ord a) => Monoid (Permutation a) where
   mempty = P M.empty
   mappend = (<>)
 
 -- make a permutation from pairs (a point, its image under the permutation)
-fromPairs :: Ord a => [(a, a)] -> Permutation a
+fromPairs :: (Ord a) => [(a, a)] -> Permutation a
 fromPairs xys = P (M.fromList (filter (uncurry (/=)) xys))
 
 -- list the elements of the group, given a "transversal generating set"
-eltsTGS :: Ord a => [Permutation a] -> [Permutation a]
+eltsTGS :: (Ord a) => [Permutation a] -> [Permutation a]
 eltsTGS tgs =
   let transversals = map (mempty :) $ L.groupBy (\g h -> minsupp g == minsupp h) tgs
    in map mconcat $ map reverse $ sequence transversals
 
-closureS :: Ord a => [a] -> [a -> a] -> S.Set a
+closureS :: (Ord a) => [a] -> [a -> a] -> S.Set a
 closureS xs fs = inclosure S.empty xs
   where
     inclosure interior (x : xs)
@@ -173,20 +203,20 @@ closureS xs fs = inclosure S.empty xs
       | otherwise = inclosure (S.insert x interior) ([f x | f <- fs] ++ xs)
     inclosure interior [] = interior
 
-closure :: Ord a => [a] -> [a -> a] -> [a]
+closure :: (Ord a) => [a] -> [a -> a] -> [a]
 closure xs fs = S.toList $ closureS xs fs
 
-orbit :: Ord a => (a -> t -> a) -> a -> [t] -> [a]
+orbit :: (Ord a) => (a -> t -> a) -> a -> [t] -> [a]
 orbit action x gs = closure [x] [(`action` g) | g <- gs]
 
 -- version of the Data.List function which assume that the lists are ascending sets (no repeated elements)
-toListSet :: Ord b => [b] -> [b]
+toListSet :: (Ord b) => [b] -> [b]
 toListSet xs = map head $ L.group $ L.sort xs
 
 -- recover a transversal generating set from a strong generating set
 -- -- A strong generating set is a generating set gs such that <gs intersect si> = si
 -- -- i.e., its intersection with each successive stabiliser in the chain generates the stabiliser
-tgsFromSgs :: Ord a => [Permutation a] -> [Permutation a]
+tgsFromSgs :: (Ord a) => [Permutation a] -> [Permutation a]
 tgsFromSgs sgs = concatMap transversal bs
   where
     bs = toListSet $ map minsupp sgs
@@ -210,7 +240,7 @@ esfromhes = S.fromList . L.nub . concatMap generatePairs . S.toList
 
 {-DISTANCE PARTITION-}
 
-distancePartitionS :: Ord a => [a] -> S.Set [a] -> a -> [[a]]
+distancePartitionS :: (Ord a) => [a] -> S.Set [a] -> a -> [[a]]
 distancePartitionS vs eset v = distancePartition (S.singleton v) (S.delete v (S.fromList vs))
   where
     distancePartition boundary exterior
@@ -224,13 +254,13 @@ isSingleton :: [a] -> Bool
 isSingleton [_] = True
 isSingleton _ = False
 
-intersectCells :: Ord a => [[a]] -> [[a]] -> [[a]]
+intersectCells :: (Ord a) => [[a]] -> [[a]] -> [[a]]
 intersectCells p1 p2 = concat [[c1 `intersectAsc` c2 | c2 <- p2] | c1 <- p1]
 
--- |The (multi-)set intersection of two ascending lists. If both inputs are strictly increasing,
--- then the output is the set intersection and is strictly increasing. If both inputs are weakly increasing,
--- then the output is the multiset intersection (with multiplicity), and is weakly increasing.
-intersectAsc :: Ord a => [a] -> [a] -> [a]
+-- | The (multi-)set intersection of two ascending lists. If both inputs are strictly increasing,
+--  then the output is the set intersection and is strictly increasing. If both inputs are weakly increasing,
+--  then the output is the multiset intersection (with multiplicity), and is weakly increasing.
+intersectAsc :: (Ord a) => [a] -> [a] -> [a]
 intersectAsc (x : xs) (y : ys) =
   case compare x y of
     LT -> intersectAsc xs (y : ys)
@@ -238,13 +268,13 @@ intersectAsc (x : xs) (y : ys) =
     GT -> intersectAsc (x : xs) ys
 intersectAsc _ _ = []
 
--- |Return all the ways to \"pick one and leave the others\" from a list
+-- | Return all the ways to \"pick one and leave the others\" from a list
 picks :: [a] -> [(a, [a])]
 picks [] = []
 picks (x : xs) = (x, xs) : [(y, x : ys) | (y, ys) <- picks xs]
 
--- |Compatibility condition
-isAutomorphism :: Ord a => Graph a -> [(a, a)] -> Bool
+-- | Compatibility condition
+isAutomorphism :: (Ord a) => Graph a -> [(a, a)] -> Bool
 isAutomorphism g@(G vs es) pairs = (es == S.fromList (map (-^ p) (S.toList es)))
   where
     p = fromPairs pairs
@@ -340,80 +370,86 @@ max_cycles cycles = [([g], S.toList gs) | (g, gs) <- cycles, propercycle gs == F
 -}
 {-ONE DIMENSIONAL REPRESENTATIONS-}
 
---prime factorization
+-- prime factorization
 factorize :: Int -> Int -> [Int]
 factorize _ 1 = []
 factorize d n
-    | d * d > n = [n]
-    | n `mod` d == 0 = d : factorize d (n `div` d)
-    | otherwise = factorize (d + 1) n
+  | d * d > n = [n]
+  | n `mod` d == 0 = d : factorize d (n `div` d)
+  | otherwise = factorize (d + 1) n
 
 primeFactors :: Int -> [Int]
 primeFactors = factorize 2
 
-formatfactors :: [Int]->[(Int,Int)]
-formatfactors xs= recformat xs [] where
-  recformat [] fxs =fxs
-  recformat xs fxs =recformat (filter (/=m) xs) [(m,length $ (filter (==m) xs))]++fxs where
-    m=maximum xs
+formatfactors :: [Int] -> [(Int, Int)]
+formatfactors xs = recformat xs []
+  where
+    recformat [] fxs = fxs
+    recformat xs fxs = recformat (filter (/= m) xs) [(m, length $ (filter (== m) xs))] ++ fxs
+      where
+        m = maximum xs
 
---returns list of tuples (prime number, power in prime decomposition)
-p_factors :: Int->[(Int,Int)]
+-- returns list of tuples (prime number, power in prime decomposition)
+p_factors :: Int -> [(Int, Int)]
 p_factors x = formatfactors $ primeFactors x
 
---calculate orders of group elements
-element_orders :: [FastPermutation] -> [(FastPermutation,(Int,Int))]
-element_orders gs = [(g, head (p_factors $ order g))| g<-gs, (length $ p_factors $ order g) ==1] where
-  order g = 1+(L.length $ takeWhile (/= g) $ tail $ iterate (<> g) g) 
+-- calculate orders of group elements
+element_orders :: [FastPermutation] -> [(FastPermutation, (Int, Int))]
+element_orders gs = [(g, head (p_factors $ order g)) | g <- gs, (length $ p_factors $ order g) == 1]
+  where
+    order g = 1 + (L.length $ takeWhile (/= g) $ tail $ iterate (<> g) g)
 
---find generators with corresponding orbit length. it needs for characters table
-group_generators :: [FastPermutation] -> [(FastPermutation,(Int,Int))]
-group_generators gs = recgens ps_ini [] ord_gs [] where
-  
-  ps_ini = p_factors $ length gs
-  ord_gs=element_orders gs
+-- find generators with corresponding orbit length. it needs for characters table
+group_generators :: [FastPermutation] -> [(FastPermutation, (Int, Int))]
+group_generators gs = recgens ps_ini [] ord_gs []
+  where
+    ps_ini = p_factors $ length gs
+    ord_gs = element_orders gs
 
-  recgens [] gens cs_tail subgroup = gens 
-  recgens ps gens cs_tail subgroup = recgens new_ps new_gens new_cs_tail new_subgroup 
-    where 
-      nice_cs = find_nice_cs cs_tail ps
-      new_ps = update_pfactors ps nice_cs
-      new_subgroup= update_subgroup subgroup nice_cs
-      new_cs_tail= update_cs_tail new_subgroup new_ps cs_tail
-      new_gens=[nice_cs]++gens
+    recgens [] gens cs_tail subgroup = gens
+    recgens ps gens cs_tail subgroup = recgens new_ps new_gens new_cs_tail new_subgroup
+      where
+        nice_cs = find_nice_cs cs_tail ps
+        new_ps = update_pfactors ps nice_cs
+        new_subgroup = update_subgroup subgroup nice_cs
+        new_cs_tail = update_cs_tail new_subgroup new_ps cs_tail
+        new_gens = [nice_cs] ++ gens
 
-update_pfactors :: [(Int,Int)]->(FastPermutation,(Int,Int))->[(Int,Int)]
-update_pfactors ((p,ppower):ps) (_, (nice_p, nice_power))
-  | ppower-nice_power>0 = (p,ppower-nice_power):ps
-  | ppower-nice_power==0 = ps
+update_pfactors :: [(Int, Int)] -> (FastPermutation, (Int, Int)) -> [(Int, Int)]
+update_pfactors ((p, ppower) : ps) (_, (nice_p, nice_power))
+  | ppower - nice_power > 0 = (p, ppower - nice_power) : ps
+  | ppower - nice_power == 0 = ps
 
-update_cs_tail :: [FastPermutation] -> [(Int,Int)] -> [(FastPermutation, (Int,Int))]->[(FastPermutation, (Int,Int))]
-update_cs_tail  new_subgroup new_ps cs_tail = [(fp,(p,ppower)) | (fp,(p,ppower))<-cs_tail, fp `L.notElem` new_subgroup, (p,ppower)<(L.maximum new_ps)]
+update_cs_tail :: [FastPermutation] -> [(Int, Int)] -> [(FastPermutation, (Int, Int))] -> [(FastPermutation, (Int, Int))]
+update_cs_tail new_subgroup new_ps cs_tail = [(fp, (p, ppower)) | (fp, (p, ppower)) <- cs_tail, fp `L.notElem` new_subgroup, (p, ppower) < (L.maximum new_ps)]
 
-update_subgroup :: [FastPermutation] -> (FastPermutation, (Int, Int)) ->[FastPermutation]
-update_subgroup subgroup (nice_gen,(p,ppower)) = L.nub [h<>g| h <- subgroup++[unit], g <-powers_list] where
-  unit =FastPermutation (U.fromList  [0..((fp_length nice_gen)-1)])
-  powers_list = take (p^ppower) (iterate (<>nice_gen) unit)
+update_subgroup :: [FastPermutation] -> (FastPermutation, (Int, Int)) -> [FastPermutation]
+update_subgroup subgroup (nice_gen, (p, ppower)) = L.nub [h <> g | h <- subgroup ++ [unit], g <- powers_list]
+  where
+    unit = IdentityPermutation -- FastPermutation (U.fromList [0 .. ((fp_length nice_gen) - 1)])
+    powers_list = take (p ^ ppower) (iterate (<> nice_gen) unit)
 
-find_nice_cs :: [(FastPermutation, (Int,Int))] -> [(Int,Int)] -> (FastPermutation, (Int,Int))
-find_nice_cs cs_tail ps = L.maximumBy (comparing snd) (filter (\(x,(p,pk))-> p==(fst pp) && pk<=(snd pp)) cs_tail) where
-  pp=head ps
+find_nice_cs :: [(FastPermutation, (Int, Int))] -> [(Int, Int)] -> (FastPermutation, (Int, Int))
+find_nice_cs cs_tail ps = L.maximumBy (comparing snd) (filter (\(x, (p, pk)) -> p == (fst pp) && pk <= (snd pp)) cs_tail)
+  where
+    pp = head ps
 
-fp_length :: FastPermutation -> Int
-fp_length (FastPermutation vector) = U.length vector
+-- fp_length :: FastPermutation -> Int
+-- fp_length (FastPermutation vector) = U.length vector
 
 -- build commutator subgroup [G,G]
 commutator_subgroup :: [FastPermutation] -> [FastPermutation]
-commutator_subgroup gs = L.nub [g<>h<>(invert g)<>(invert h)| g<-gs,h<-gs]
+commutator_subgroup gs = L.nub [g <> h <> (invert g) <> (invert h) | g <- gs, h <- gs]
 
---build abelianization G/[G,G]
+-- build abelianization G/[G,G]
 abelianization :: [FastPermutation] -> [S.Set FastPermutation]
-abelianization gs = L.nub [coset g cgs|g<-gs] where
-  coset g cgs=S.fromList [g<>h|h<-cgs]
-  cgs = commutator_subgroup gs
+abelianization gs = L.nub [coset g cgs | g <- gs]
+  where
+    coset g cgs = S.fromList [g <> h | h <- cgs]
+    cgs = commutator_subgroup gs
 
---multiplication of equivalence classes
---fast multiplication by multiplicative table
+-- multiplication of equivalence classes
+-- fast multiplication by multiplicative table
 
 {-TEST FUNCTIONS-}
 
@@ -431,7 +467,7 @@ permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toLi
 graph :: (Ord t) => ([t], [[t]]) -> Graph t
 graph (vs, es) = G (S.fromList vs) (S.fromList (map S.fromList es))
 
--- |c n is the cyclic graph on n vertices
+-- | c n is the cyclic graph on n vertices
 c :: (Integral t) => t -> Graph t
 c n | n >= 3 = graph (vs, es)
   where
@@ -454,45 +490,52 @@ c3 n | n >= 3 = graph (vs, es)
 
 {-MAXIMAL ABELIAN SUBGROUP-}
 
-fastsymmetryGroup :: Integral t => Graph t -> [FastPermutation]
+fastsymmetryGroup :: (Integral t) => Graph t -> [FastPermutation]
 fastsymmetryGroup graph = V.toList $ toFastPermutations graph (V.fromList (symmetryGroup graph))
 
-symmetryGroup :: Ord t => Graph t -> [Permutation t]
+symmetryGroup :: (Ord t) => Graph t -> [Permutation t]
 symmetryGroup = eltsSGS . graphAuts
 
-newtype FastPermutation = FastPermutation (U.Vector Int)
-  deriving stock (Show, Eq, Ord,Generic)
+data FastPermutation = FastPermutation' (U.Vector Int) | IdentityPermutation
+  deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (NFData)
 
+mkFastPermutation :: U.Vector Int -> FastPermutation
+mkFastPermutation v
+  | v == U.generate (U.length v) id = IdentityPermutation
+  | otherwise = FastPermutation' v
 
---make fast permutations
-toFastPermutations :: Ord t => Graph t -> Vector (Permutation t) -> Vector FastPermutation
+-- make fast permutations
+toFastPermutations :: (Ord t) => Graph t -> Vector (Permutation t) -> Vector FastPermutation
 toFastPermutations (G nodes _) = fmap magic
   where
     nodesList = S.toAscList nodes
     eltToIntMap = M.fromAscList $ zip nodesList [(0 :: Int) ..]
     eltToInt elt = let Just i = M.lookup elt eltToIntMap in i
     magic (P mapping) =
-      FastPermutation . U.fromList $
+      mkFastPermutation . U.fromList $
         (\(elt, index) -> maybe index eltToInt (M.lookup elt mapping))
           <$> zip nodesList [0 ..]
 
 instance Semigroup FastPermutation where
-  (FastPermutation a) <> (FastPermutation b) = FastPermutation $ U.map (b !) a
+  IdentityPermutation <> b = b
+  a <> IdentityPermutation = a
+  (FastPermutation' a) <> (FastPermutation' b) = mkFastPermutation $ U.map (b !) a
 
---find index of an integer
+-- find index of an integer
 elemIndexInt :: U.Vector Int -> Int -> Int
-elemIndexInt vx x= fromJust (U.elemIndex x vx)
+elemIndexInt vx x = fromJust (U.elemIndex x vx)
 
---make inverse
+-- make inverse
 invert :: FastPermutation -> FastPermutation
-invert (FastPermutation a)= FastPermutation $ U.generate (U.length a) (elemIndexInt a)
+invert (FastPermutation' a) = mkFastPermutation $ U.generate (U.length a) (elemIndexInt a)
+invert IdentityPermutation = IdentityPermutation
 
 newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
   deriving stock (Show, Eq, Generic)
   deriving anyclass (NFData)
 
-mkCommutationMatrix :: Ord t => Graph t -> Vector (Permutation t) -> CommutationMatrix
+mkCommutationMatrix :: (Ord t) => Graph t -> Vector (Permutation t) -> CommutationMatrix
 mkCommutationMatrix graph gs =
   CommutationMatrix $
     fmap (\g -> fmap (\h -> g <> h == h <> g) gs') gs'
@@ -508,7 +551,7 @@ data History = History
   }
   deriving stock (Show, Eq)
 
-abelianDFS :: Ord t => CommutationMatrix -> Vector (Permutation t) -> [History]
+abelianDFS :: (Ord t) => CommutationMatrix -> Vector (Permutation t) -> [History]
 abelianDFS (CommutationMatrix comm) gs = go emptyHistory
   where
     emptyHistory :: History
@@ -544,14 +587,13 @@ abelianDFS (CommutationMatrix comm) gs = go emptyHistory
                   $ addToHistory history <$> cs
            in concatMap go newHistories
 
---maximal abelian subgroup of graph automorphisms
-abSymmetries :: Ord t => Graph t -> Vector FastPermutation
-abSymmetries gr = V.fromList [gsfast!index |index<-(V.toList int_form)]
-     where
-      gs=V.fromList $ symmetryGroup gr
-      mkComm=mkCommutationMatrix gr gs
-      branches=take 20 (abelianDFS mkComm gs)
-      leaf= L.maximumBy (comparing (V.length . hIncluded)) branches
-      int_form=hIncluded leaf
-      gsfast=toFastPermutations gr gs
-      
+-- maximal abelian subgroup of graph automorphisms
+abSymmetries :: (Ord t) => Graph t -> Vector FastPermutation
+abSymmetries gr = V.fromList [gsfast ! index | index <- (V.toList int_form)]
+  where
+    gs = V.fromList $ symmetryGroup gr
+    mkComm = mkCommutationMatrix gr gs
+    branches = take 20 (abelianDFS mkComm gs)
+    leaf = L.maximumBy (comparing (V.length . hIncluded)) branches
+    int_form = hIncluded leaf
+    gsfast = toFastPermutations gr gs

@@ -96,7 +96,7 @@ executable graph-symmetries
 
   -- Other library packages from which modules are imported.
   build-depends:
-    , base              ^>=4.16.4.0
+    , base              >=4.16.0.0 && <5
     , graph-symmetries
 
   -- Directories containing source files.
@@ -129,8 +129,8 @@ test-suite graph-symmetries-test
 
   -- Test dependencies.
   build-depends:
-    , base              ^>=4.16.4.0
+    , base              >=4.16.0.0 && <5
     , containers
     , graph-symmetries
-    , hspec             ^>=2.11.0.1
-    , QuickCheck        ^>=2.14.2
+    , hspec             >=2.11.0.1
+    , QuickCheck        >=2.14.2
