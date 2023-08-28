@@ -23,6 +23,7 @@ import Data.List (groupBy)
 import Data.List qualified as L
 import Data.Map qualified as M
 import Data.Maybe
+import Data.Ratio
 import Data.Ord (comparing)
 import Data.Set qualified as S
 import Data.Vector (Vector)
@@ -46,11 +47,13 @@ newtype Permutation a = P (M.Map a a)
 --  The boolean indicates whether or not this is a terminal / solution node
 data SearchTree a = T Bool a [SearchTree a] deriving (Eq, Ord, Show, Functor)
 
+
+-- | Data structures for group operations (needed for 1D representations)
 class HasIdentity a where
   isIdentity :: a -> Bool
 
 newtype GroupElement a = UnsafeGroupElement {unGroupElement :: Maybe a}
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Ord)
 
 instance HasIdentity (GroupElement a) where
   isIdentity = isNothing . unGroupElement
@@ -72,8 +75,6 @@ instance (Semigroup a, HasIdentity a) => Monoid (GroupElement a) where
 type IsGroupElement :: Type -> Constraint
 type IsGroupElement a = (Eq a, Ord a, HasIdentity a, Monoid a)
 
-foo :: (IsGroupElement a) => a -> Bool
-foo = isIdentity
 
 -- | Given a graph, return the strong generating set
 graphAuts :: (Ord a) => Graph a -> [Permutation a]
@@ -92,7 +93,7 @@ orderSGS sgs = product $ map (L.genericLength . fundamentalOrbit) bs
 eltsSGS :: (Ord a) => [Permutation a] -> [Permutation a]
 eltsSGS sgs = eltsTGS (tgsFromSgs sgs)
 
--- | Return a strong generating set ftrom the whole search tree.
+-- | Return a strong generating set from the whole search tree.
 --  For example, if we have already found (3 4), and then we find (1 2 3),
 --  then there is no need to look for (1 3 ...) or (1 4 ...), since it is clear that such elements exist
 --  as products of those we have already found.
@@ -279,95 +280,6 @@ isAutomorphism g@(G vs es) pairs = (es == S.fromList (map (-^ p) (S.toList es)))
   where
     p = fromPairs pairs
 
-{-{-MAXIMAL TRANSLATION SUBGROUP-}
-
--- calculate maximal translation subgroup of a given group of graph automorphisms. the function returns (group generators, group elements),
--- where generators consitute a minimal generating set of the subgroup.
-maxAbsubgroup :: (Ord a, Show a) => Graph a -> [Permutation a] -> ([Permutation a], [Permutation a])
-maxAbsubgroup graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups graph group)
-  where
-    add_unity (g, gs) = (g, gs ++ [mempty])
-
--- calculate maximal translation subgroup of a given group of graph automorphisms with known lattice dimension. the function returns (group generators, group elements),
--- where generators consitute a minimal generating set of the subgroup.
-maxAbsubgroup_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> ([Permutation a], [Permutation a])
-maxAbsubgroup_lat lat_dim graph group = add_unity $ L.maximumBy compare_by_ord (absubgroups_lat lat_dim graph group)
-  where
-    add_unity (g, gs) = (g, gs ++ [mempty])
-
--- compare two abelian subgroups by their order
-compare_by_ord :: (Ord a, Show a) => ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a]) -> Ordering
-compare_by_ord g1 g2
-  | aborder g1 < aborder g2 = LT
-  | aborder g1 > aborder g2 = GT
-  | aborder g1 == aborder g2 = EQ
-  where
-    aborder (gen, group) = length group
-
--- calculate abelian subgroups with no fixed points with finite number of iterations of searching tree. the number of iterations corresponding to the lattice dimension
-absubgroups_lat :: (Ord a, Show a) => Int -> Graph a -> [Permutation a] -> [([Permutation a], [Permutation a])]
-absubgroups_lat lat_dim graph group = cycle_tree 1 cgs cgs
-  where
-    cycle_tree iteration tail trg
-      | (new_tail == [] || iteration == lat_dim) = trg
-      | otherwise = cycle_tree (iteration + 1) new_tail new_trg
-      where
-        new_trg = new_tail ++ trg
-        new_tail = [(g, abgs) | (g, abgs) <- inter_tail, propersubgroup abgs == False]
-          where
-            inter_tail = filterEqualSecond [combine_abgroups (gs, abgs) (h, abh) | (gs, abgs) <- tail, (h, abh) <- cgs, all (< (head h)) gs, commuteWithAll h gs]
-            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs) | (_, abhs) <- inter_tail]
-    cgs = max_cycles (cycles graph group)
-
--- calculate abelian subgroups with no fixed points. input is a list of all group elements
-absubgroups :: (Ord a, Show a) => Graph a -> [Permutation a] -> [([Permutation a], [Permutation a])]
-absubgroups graph group = cycle_tree cgs cgs
-  where
-    cycle_tree tail trg
-      | new_tail == [] = trg
-      | otherwise = cycle_tree new_tail new_trg
-      where
-        new_trg = new_tail ++ trg
-        new_tail = [(g, abgs) | (g, abgs) <- inter_tail, propersubgroup abgs == False]
-          where
-            inter_tail = filterEqualSecond [combine_abgroups (gs, abgs) (h, abh) | (gs, abgs) <- tail, (h, abh) <- cgs, all (< (head h)) gs, commuteWithAll h gs]
-            propersubgroup abgs = or [(S.fromList abgs) `S.isProperSubsetOf` (S.fromList abhs) | (_, abhs) <- inter_tail]
-    cgs = max_cycles (cycles graph group)
-
--- create a closure of two nonintersecting abelian groups represented as ([group generators],[elements of a group without unit element])
-combine_abgroups :: (Ord a, Show a) => ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a]) -> ([Permutation a], [Permutation a])
-combine_abgroups (gs, abgs) (hs, abhs) = (gs ++ hs, abghs)
-  where
-    abghs = L.sort $ L.nub (abgs ++ abhs ++ [h <> g | h <- abhs, g <- abgs, h <> g /= mempty])
-
--- check, if all elements in a list commute with all elements in another list
-commuteWithAll :: (Ord a, Show a) => [Permutation a] -> [Permutation a] -> Bool
-commuteWithAll hs gs = and [g <> h == h <> g | h <- hs, g <- gs]
-
--- calculate all derangement cycles generated by group elements
-cycles :: (Ord a, Show a) => Graph a -> [Permutation a] -> [(Permutation a, S.Set (Permutation a))]
-cycles graph group = filterEqualSecond [(g, S.fromList $ powers g) | g <- group, g /= mempty, derangement graph (powers g)]
-  where
-    powers g = takeWhile (/= mempty) $ tail $ iterate (<> g) mempty
-
--- check if all permutations in a list are derangements
-derangement :: (Ord a, Show a) => Graph a -> [Permutation a] -> Bool
-derangement graph cycle = and (map (isderangement graph) cycle)
-
--- check if a permutation is a derangement
-isderangement :: (Ord a, Show a) => Graph a -> Permutation a -> Bool
-isderangement graph@(G vs es) (P mg) = (M.size mg == S.size vs)
-
--- filter list of tuples by the equal second elements
-filterEqualSecond :: Eq b => [(a, b)] -> [(a, b)]
-filterEqualSecond = L.nubBy (\(_, y1) (_, y2) -> y1 == y2)
-
--- calculate all maximal cycles i.e cycles not included into other cycles. return a list of ([generator], [generated cycle])
-max_cycles :: (Ord a, Show a) => [(Permutation a, S.Set (Permutation a))] -> [([Permutation a], [Permutation a])]
-max_cycles cycles = [([g], S.toList gs) | (g, gs) <- cycles, propercycle gs == False]
-  where
-    propercycle gs = or [gs `S.isProperSubsetOf` cycle | (_, cycle) <- cycles]
--}
 {-ONE DIMENSIONAL REPRESENTATIONS-}
 
 -- prime factorization
@@ -391,22 +303,23 @@ formatfactors xs = recformat xs []
 
 -- returns list of tuples (prime number, power in prime decomposition)
 p_factors :: Int -> [(Int, Int)]
-p_factors x = formatfactors $ primeFactors x
+p_factors x = reverse $ formatfactors $ primeFactors x
 
 -- calculate orders of group elements
-element_orders :: [FastPermutation] -> [(FastPermutation, (Int, Int))]
+element_orders :: IsGroupElement a => [a] -> [(a, (Int, Int))]
 element_orders gs = [(g, head (p_factors $ order g)) | g <- gs, (length $ p_factors $ order g) == 1]
   where
     order g = 1 + (L.length $ takeWhile (/= g) $ tail $ iterate (<> g) g)
 
--- find generators with corresponding orbit length. it needs for characters table
-group_generators :: [FastPermutation] -> [(FastPermutation, (Int, Int))]
-group_generators gs = recgens ps_ini [] ord_gs []
+-- find generators with corresponding orbit length. it is needed for characters table.
+-- here we use the structure theorem for finite abelian groups: they can be represented as a direct sum of cycles of prime power order
+group_generators :: IsGroupElement a => [a] -> [(a, Int)]
+group_generators gs = recgens ps_ini [] ord_gs [mempty]
   where
     ps_ini = p_factors $ length gs
     ord_gs = element_orders gs
 
-    recgens [] gens cs_tail subgroup = gens
+    recgens [] gens cs_tail subgroup = simplify_order gens
     recgens ps gens cs_tail subgroup = recgens new_ps new_gens new_cs_tail new_subgroup
       where
         nice_cs = find_nice_cs cs_tail ps
@@ -415,95 +328,91 @@ group_generators gs = recgens ps_ini [] ord_gs []
         new_cs_tail = update_cs_tail new_subgroup new_ps cs_tail
         new_gens = [nice_cs] ++ gens
 
-update_pfactors :: [(Int, Int)] -> (FastPermutation, (Int, Int)) -> [(Int, Int)]
-update_pfactors ((p, ppower) : ps) (_, (nice_p, nice_power))
+simplify_order :: IsGroupElement a => [(a,(Int, Int))]->[(a,Int)]
+simplify_order gens = [(gen,p^ppower)| (gen,(p,ppower))<-gens]
+
+update_pfactors :: IsGroupElement a => [(Int, Int)] -> (a, (Int, Int)) -> [(Int, Int)]
+update_pfactors ((p,ppower):ps) (_, (nice_p, nice_power))
   | ppower - nice_power > 0 = (p, ppower - nice_power) : ps
   | ppower - nice_power == 0 = ps
 
-update_cs_tail :: [FastPermutation] -> [(Int, Int)] -> [(FastPermutation, (Int, Int))] -> [(FastPermutation, (Int, Int))]
-update_cs_tail new_subgroup new_ps cs_tail = [(fp, (p, ppower)) | (fp, (p, ppower)) <- cs_tail, fp `L.notElem` new_subgroup, (p, ppower) < (L.maximum new_ps)]
+update_cs_tail :: IsGroupElement a => [a] -> [(Int, Int)] -> [(a, (Int, Int))] -> [(a, (Int, Int))]
+update_cs_tail new_subgroup new_ps cs_tail = [(fp, (p, ppower)) | (fp, (p, ppower)) <- cs_tail, fp `L.notElem` new_subgroup, (p, ppower) <= (L.maximum new_ps)]
 
-update_subgroup :: [FastPermutation] -> (FastPermutation, (Int, Int)) -> [FastPermutation]
-update_subgroup subgroup (nice_gen, (p, ppower)) = L.nub [h <> g | h <- subgroup ++ [unit], g <- powers_list]
+update_subgroup :: IsGroupElement a => [a] -> (a, (Int, Int)) -> [a]
+update_subgroup subgroup (nice_gen, (p, ppower)) = L.nub [h <> g | h <- subgroup, g <- powers_list]
   where
-    unit = IdentityPermutation -- FastPermutation (U.fromList [0 .. ((fp_length nice_gen) - 1)])
-    powers_list = take (p ^ ppower) (iterate (<> nice_gen) unit)
+    powers_list = take (p ^ ppower) (iterate (<> nice_gen) mempty)
 
-find_nice_cs :: [(FastPermutation, (Int, Int))] -> [(Int, Int)] -> (FastPermutation, (Int, Int))
+find_nice_cs :: IsGroupElement a => [(a, (Int, Int))] -> [(Int, Int)] -> (a, (Int, Int))
 find_nice_cs cs_tail ps = L.maximumBy (comparing snd) (filter (\(x, (p, pk)) -> p == (fst pp) && pk <= (snd pp)) cs_tail)
   where
     pp = head ps
 
--- fp_length :: FastPermutation -> Int
--- fp_length (FastPermutation vector) = U.length vector
+--type for abelianized group
+newtype Coset = Coset (S.Set FastPermutation) deriving (Eq, Ord, Show)
+
+instance HasIdentity Coset where
+  isIdentity (Coset a) = unit_fp `L.elem` a where
+    (FastPermutation v) = S.elemAt 0 a
+    unit_fp= FastPermutation (U.generate (U.length v) id) 
+
+instance Semigroup Coset where
+  (Coset a) <> (Coset b) = Coset $ S.fromList [x<>y| x <- (S.toList a), y <- (S.toList b)]
 
 -- build commutator subgroup [G,G]
 commutator_subgroup :: [FastPermutation] -> [FastPermutation]
 commutator_subgroup gs = L.nub [g <> h <> (invert g) <> (invert h) | g <- gs, h <- gs]
 
 -- build abelianization G/[G,G]
-abelianization :: [FastPermutation] -> [S.Set FastPermutation]
-abelianization gs = L.nub [coset g cgs | g <- gs]
+abelianization_cs :: [FastPermutation] -> [Coset]
+abelianization_cs gs = map Coset (L.nub [coset g cgs | g <- gs])
   where
     coset g cgs = S.fromList [g <> h | h <- cgs]
     cgs = commutator_subgroup gs
 
--- multiplication of equivalence classes
--- fast multiplication by multiplicative table
+--abelianization for GroupElement instance
+abelianization :: [FastPermutation] -> [GroupElement Coset]
+abelianization g = map mkGroupLike (abelianization_cs g)
 
-{-TEST FUNCTIONS-}
+--G/[G,G] for a given graph
+abfactorSymmetries :: (Ord t)=>Graph t ->[GroupElement Coset]
+abfactorSymmetries g = abelianization $ fastsymmetryGroup g
 
--- naive way to generate a group from a generating set
-eltsbyclosure :: (Ord a) => [Permutation a] -> [Permutation a]
-eltsbyclosure gs = closure [mempty] [(<> g) | g <- gs]
+--with given generators and character's index, return character
+characters :: IsGroupElement a => [(a,Int)] -> Int -> [(a, Ratio Int)]
+characters gens ind = [(g, frac_part $ (ind % 1)*phase )| (g, phase) <- gsphs] where
+  gsphs = elementsandphases gens
 
--- check that permutations are graph automorphisms
-permutations_check :: (Ord a) => Graph a -> [Permutation a] -> Bool
-permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toList es)) | p <- group]
+--with given generators, return group elements with corresponding phases
+elementsandphases :: IsGroupElement a => [(a,Int)]->[(a, Ratio Int)]
+elementsandphases gens =  update_elphs [(mempty, 0 % 1)] gens where
+  update_elphs elphs [] = elphs
+  update_elphs elphs ((g,ord):gs) = update_elphs [((power g n) <> element, frac_part $ phase+n%ord ) | (element,phase) <-elphs, n<-[0..(ord-1)] ] gs
 
-{-EXAMPLES-}
+power :: IsGroupElement a => a -> Int -> a
+power g n
+  | n==0 = mempty
+  | n > 0  = last $ take n (iterate (<> g) g)
 
--- function to initialize a graph from lists
-graph :: (Ord t) => ([t], [[t]]) -> Graph t
-graph (vs, es) = G (S.fromList vs) (S.fromList (map S.fromList es))
+frac_part :: Ratio Int -> Ratio Int
+frac_part x = ((numerator x) `mod` (denominator x)) % (denominator x)  
 
--- | c n is the cyclic graph on n vertices
-c :: (Integral t) => t -> Graph t
-c n | n >= 3 = graph (vs, es)
-  where
-    vs = [1 .. n]
-    es = L.insert [1, n] [[i, i + 1] | i <- [1 .. n - 1]]
-
--- rectangle lattice
-rect :: (Integral t) => t -> t -> Graph t
-rect n k = graph (vs, es)
-  where
-    vs = [0 .. n * k - 1]
-    es = [[k * i + j, k * i + ((j + 1) `mod` k)] | i <- [0 .. n - 1], j <- [0 .. k - 1]] ++ [[k * i + j, k * ((i + 1) `mod` n) + j] | i <- [0 .. n - 1], j <- [0 .. k - 1]]
-
--- cyclic hypergraph with 3-vertex edges
-c3 :: (Integral t) => t -> Graph t
-c3 n | n >= 3 = graph (vs, es)
-  where
-    vs = [0 .. (n - 1)]
-    es = [[i, (i + 1) `mod` n, (i + 2) `mod` n] | i <- [0 .. (n - 1)]]
 
 {-MAXIMAL ABELIAN SUBGROUP-}
 
-fastsymmetryGroup :: (Integral t) => Graph t -> [FastPermutation]
+fastsymmetryGroup :: (Ord t) => Graph t -> [FastPermutation]
 fastsymmetryGroup graph = V.toList $ toFastPermutations graph (V.fromList (symmetryGroup graph))
 
 symmetryGroup :: (Ord t) => Graph t -> [Permutation t]
 symmetryGroup = eltsSGS . graphAuts
 
-data FastPermutation = FastPermutation' (U.Vector Int) | IdentityPermutation
-  deriving stock (Show, Eq, Ord, Generic)
-  deriving anyclass (NFData)
+-- maximal abelian subgroup as array of grouplike elements
+abSymmetries :: (Ord t) => Graph t -> [GroupElement FastPermutation]
+abSymmetries g = map mkGroupLike (abSymmetries_fps g)
 
-mkFastPermutation :: U.Vector Int -> FastPermutation
-mkFastPermutation v
-  | v == U.generate (U.length v) id = IdentityPermutation
-  | otherwise = FastPermutation' v
+
+data FastPermutation = FastPermutation (U.Vector Int) deriving (Eq, Ord, Show)
 
 -- make fast permutations
 toFastPermutations :: (Ord t) => Graph t -> Vector (Permutation t) -> Vector FastPermutation
@@ -513,14 +422,15 @@ toFastPermutations (G nodes _) = fmap magic
     eltToIntMap = M.fromAscList $ zip nodesList [(0 :: Int) ..]
     eltToInt elt = let Just i = M.lookup elt eltToIntMap in i
     magic (P mapping) =
-      mkFastPermutation . U.fromList $
+      FastPermutation . U.fromList $
         (\(elt, index) -> maybe index eltToInt (M.lookup elt mapping))
           <$> zip nodesList [0 ..]
 
+instance HasIdentity FastPermutation where
+  isIdentity (FastPermutation v) = v == U.generate (U.length v) id
+
 instance Semigroup FastPermutation where
-  IdentityPermutation <> b = b
-  a <> IdentityPermutation = a
-  (FastPermutation' a) <> (FastPermutation' b) = mkFastPermutation $ U.map (b !) a
+  (FastPermutation a) <> (FastPermutation b) = FastPermutation $ U.map (b !) a
 
 -- find index of an integer
 elemIndexInt :: U.Vector Int -> Int -> Int
@@ -528,8 +438,7 @@ elemIndexInt vx x = fromJust (U.elemIndex x vx)
 
 -- make inverse
 invert :: FastPermutation -> FastPermutation
-invert (FastPermutation' a) = mkFastPermutation $ U.generate (U.length a) (elemIndexInt a)
-invert IdentityPermutation = IdentityPermutation
+invert (FastPermutation a) = FastPermutation $ U.generate (U.length a) (elemIndexInt a)
 
 newtype CommutationMatrix = CommutationMatrix (Vector (Vector Bool))
   deriving stock (Show, Eq, Generic)
@@ -588,8 +497,8 @@ abelianDFS (CommutationMatrix comm) gs = go emptyHistory
            in concatMap go newHistories
 
 -- maximal abelian subgroup of graph automorphisms
-abSymmetries :: (Ord t) => Graph t -> Vector FastPermutation
-abSymmetries gr = V.fromList [gsfast ! index | index <- (V.toList int_form)]
+abSymmetries_fps :: (Ord t) => Graph t -> [FastPermutation]
+abSymmetries_fps gr = [gsfast ! index | index <- (V.toList int_form)]
   where
     gs = V.fromList $ symmetryGroup gr
     mkComm = mkCommutationMatrix gr gs
@@ -597,3 +506,45 @@ abSymmetries gr = V.fromList [gsfast ! index | index <- (V.toList int_form)]
     leaf = L.maximumBy (comparing (V.length . hIncluded)) branches
     int_form = hIncluded leaf
     gsfast = toFastPermutations gr gs
+
+{-TEST FUNCTIONS-}
+--abelian closure with given generators
+ab_closure :: IsGroupElement a => [(a, (Int,Int))]->[a]
+ab_closure gens = ab_closing [mempty] gens where
+  ab_closing group [] = group
+  ab_closing group (x:xs) = ab_closing (update_subgroup group x) xs
+
+-- naive way to generate a group from a generating set
+eltsbyclosure :: (Ord a) => [Permutation a] -> [Permutation a]
+eltsbyclosure gs = closure [mempty] [(<> g) | g <- gs]
+
+-- check that permutations are graph automorphisms
+permutations_check :: (Ord a) => Graph a -> [Permutation a] -> Bool
+permutations_check g@(G vs es) group = and [es == S.fromList (map (-^ p) (S.toList es)) | p <- group]
+
+{-EXAMPLES-}
+
+-- function to initialize a graph from lists
+graph :: (Ord t) => ([t], [[t]]) -> Graph t
+graph (vs, es) = G (S.fromList vs) (S.fromList (map S.fromList es))
+
+-- | c n is the cyclic graph on n vertices
+c :: (Integral t) => t -> Graph t
+c n | n >= 3 = graph (vs, es)
+  where
+    vs = [1 .. n]
+    es = L.insert [1, n] [[i, i + 1] | i <- [1 .. n - 1]]
+
+-- rectangle lattice
+rect :: (Integral t) => t -> t -> Graph t
+rect n k = graph (vs, es)
+  where
+    vs = [0 .. n * k - 1]
+    es = [[k * i + j, k * i + ((j + 1) `mod` k)] | i <- [0 .. n - 1], j <- [0 .. k - 1]] ++ [[k * i + j, k * ((i + 1) `mod` n) + j] | i <- [0 .. n - 1], j <- [0 .. k - 1]]
+
+-- cyclic hypergraph with 3-vertex edges
+c3 :: (Integral t) => t -> Graph t
+c3 n | n >= 3 = graph (vs, es)
+  where
+    vs = [0 .. (n - 1)]
+    es = [[i, (i + 1) `mod` n, (i + 2) `mod` n] | i <- [0 .. (n - 1)]]
